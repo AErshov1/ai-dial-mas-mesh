@@ -152,7 +152,7 @@ class BaseAgentTool(BaseTool, ABC):
         prompt = arguments["prompt"]
         propagate_history = bool(arguments.get("propagate_history", False))
 
-        history = []
+        history: list[dict[str, Any]] = []
         if propagate_history:
             for idx in range(len(messages)):
                 msg = messages[idx]
@@ -168,10 +168,11 @@ class BaseAgentTool(BaseTool, ABC):
         print(f"History for agent {self.name}:", history)
 
         custom_content = messages[-1].custom_content
-        messages.append(
+        history.append(
             {
                 "role": "user",
                 "content": prompt,
                 "custom_content": custom_content.dict(exclude_none=True) if custom_content else None,
             }
         )
+        return history
