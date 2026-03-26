@@ -8,8 +8,8 @@ from task.agents.calculations.calculations_agent import CalculationsAgent
 from task.agents.calculations.tools.simple_calculator_tool import SimpleCalculatorTool
 from task.tools.base_tool import BaseTool
 from task.agents.calculations.tools.py_interpreter.python_code_interpreter_tool import PythonCodeInterpreterTool
-# from task.tools.deployment.content_management_agent_tool import ContentManagementAgentTool
-# from task.tools.deployment.web_search_agent_tool import WebSearchAgentTool
+from task.tools.deployment.content_management_agent_tool import ContentManagementAgentTool
+from task.tools.deployment.web_search_agent_tool import WebSearchAgentTool
 from task.utils.constants import DIAL_ENDPOINT, DEPLOYMENT_NAME
 
 
@@ -32,8 +32,8 @@ class CalculationsApplication(ChatCompletion):
 
     async def _create_tools(self) -> list[BaseTool]:
         tools: list[BaseTool] = [
-            # ContentManagementAgentTool(DIAL_ENDPOINT),
-            # WebSearchAgentTool(DIAL_ENDPOINT),
+            ContentManagementAgentTool(DIAL_ENDPOINT),
+            WebSearchAgentTool(DIAL_ENDPOINT),
             SimpleCalculatorTool(),
             await PythonCodeInterpreterTool.create(
                 mcp_url="http://localhost:8050/mcp",

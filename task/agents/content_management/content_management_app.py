@@ -11,7 +11,6 @@ from task.tools.deployment.calculations_agent_tool import CalculationsAgentTool
 from task.tools.deployment.web_search_agent_tool import WebSearchAgentTool
 from task.utils.constants import DIAL_ENDPOINT, DEPLOYMENT_NAME
 
-#TODO:
 # 1. Create ContentManagementApplication class and extend ChatCompletion
 # 2. As a tools for ContentManagementAgent you need to provide:
 #   - FileContentExtractionTool
@@ -24,4 +23,48 @@ from task.utils.constants import DIAL_ENDPOINT, DEPLOYMENT_NAME
 #    of the ContentManagementApplication
 # 5. Add starter with DIALApp, port is 5002 (see core config)
 
-raise NotImplementedError()
+class ContentManagementApplication(ChatCompletion):
+
+    def __init__(self):
+        self.tools: list[BaseTool] = []
+
+    async def _create_tools(self) -> list[BaseTool]:
+        document_cache = DocumentCache().create()
+        tools: list[BaseTool] = [
+            FileContentExtractionTool(DIAL_ENDPOINT),
+            RagTool(
+                endpoint=DIAL_ENDPOINT,
+                deployment_name=DEPLOYMENT_NAME,
+                document_cache=document_cache
+            ),
+            CalculationsAgentTool(DIAL_ENDPOINT),
+            WebSearchAgentTool(DIAL_ENDPOINT)
+        ]
+        print(f"=> ContentManagementAgent Tools: {[tool.name for tool in tools]}")
+        return tools
+
+    async def chat_completion(
+        self, request: Request, response: Response
+    ) -> None:
+      if not self.tools:
+          self.tools = await self._create_tools()
+      with response.create_single_choice() as choice:
+        agent = ContentManagementAgent(
+            endpoint=DIAL_ENDPOINT,
+            tools=self.tools
+        )
+        result = await agent.handle_request(
+            deployment_name=DEPLOYMENT_NAME,
+            request=request,
+            choice=choice,
+            response=response
+        )
+
+      print(f"=> ContentManagementAgent Result: {result}")
+
+app: DIALApp = DIALApp()
+app.add_chat_completion(deployment_name="content-management-agent", impl=ContentManagementApplication())
+
+if __name__ == "__main__":
+    uvicorn.run(app, port=5002, host="0.0.0.0")
+
