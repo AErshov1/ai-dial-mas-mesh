@@ -11,6 +11,8 @@ from task.tools.base_tool import BaseTool
 from task.tools.models import ToolCallParams
 from task.utils.stage import StageProcessor
 
+_AGENT_DEPLOYMENT = "agent_deployment"
+_AGENT_MESSAGES = "agent_messages"
 
 class BaseAgentTool(BaseTool, ABC):
 
@@ -23,7 +25,6 @@ class BaseAgentTool(BaseTool, ABC):
         pass
 
     async def _execute(self, tool_call_params: ToolCallParams) -> str | Message:
-        #TODO:
         # 1. All the agents that will used as tools will have two parameters in request:
         #   - `prompt` (the request to agent)
         #   - `propagate_history`, boolean whether we need to propagate the history of communication with called agent
@@ -56,10 +57,82 @@ class BaseAgentTool(BaseTool, ABC):
         # 6. Return Tool message
         #    ⚠️ Remember, tool message must have tool call id, also don't forget to add `custom_content` since we need
         #       to save properly tool history to choice state later
-        raise NotImplementedError()
+        arguments = json.loads(tool_call_params.tool_call.function.arguments)
+        print(f"{'='*80}\nDEPLOYMENT TOOL CALL: {self.name}\n\n{arguments}\n{'='*80}")
 
-    def _prepare_messages(self, tool_call_params: ToolCallParams) -> list[dict[str, Any]]:
-        #TODO:
+        dial_client = AsyncDial(base_url=self.endpoint, api_key=tool_call_params.api_key, api_version='2025-01-01-preview')
+        chunks = await dial_client.chat.completions.create(
+            messages=self._prepare_messages(arguments, tool_call_params.messages),
+            deployment_name=self.deployment_name,
+            extra_headers={
+                'x-conversation-id': tool_call_params.conversation_id,
+            },
+            extra_body={
+                "custom_fields": {
+                    "configuration": {**arguments}
+                }
+            },
+            stream=True,
+        )
+        content = ''
+        result_custom_content = CustomContent(attachments=[])
+        stages: dict[int, Stage] = {}
+        stage = tool_call_params.stage
+        choice = tool_call_params.choice
+        async for chunk in chunks:
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    stage.append_content(delta.content)
+                    content += delta.content
+                if custom_content := delta.custom_content:
+                    print("Agent Custom Content:", custom_content)
+                    if custom_content.attachments:
+                        result_custom_content.attachments.extend(custom_content.attachments)
+
+                    if custom_content.state:
+                        if not result_custom_content.state:
+                          result_custom_content.state = custom_content.state
+                        else:
+                          print(f"[WARNING] Agent: multiple states in custom content!\nPrevious state: {result_custom_content.state}\nNew state: {custom_content.state}")
+
+                    agent_stages: dict[str, Any] = custom_content.dict(exclude_none=True).get("stages")
+                    if agent_stages:
+                        for stg in agent_stages:
+                            idx = stg["index"]
+                            opened_stg = stages.get(idx)
+                            if not opened_stg:
+                                opened_stg = StageProcessor.open_stage(choice, stg.get("name"))
+                                stages[idx] = opened_stg
+
+                            if stg_content := stg.get("content"):
+                                opened_stg.append_content(stg_content)
+                            elif stg_attachments := stg.get("attachments"):
+                                for stg_attachment in stg_attachments:
+                                    opened_stg.add_attachment(Attachment(**stg_attachment))
+
+        for stg in stages.values():
+            StageProcessor.close_stage_safely(stg)
+        for attachment in result_custom_content.attachments:
+            choice.add_attachment(
+                Attachment(**attachment.dict(exclude_none=True))
+            )
+
+        choice.set_state(
+            {
+                _AGENT_DEPLOYMENT: True,
+                _AGENT_MESSAGES: result_custom_content.state,
+            }
+        )
+        return Message(
+            role=Role.TOOL,
+            content=StrictStr(content),
+            custom_content=result_custom_content,
+            tool_call_id=StrictStr(tool_call_params.tool_call.id)
+        )
+
+
+    def _prepare_messages(self, arguments: Any, messages: list[Message]) -> list[dict[str, Any]]:
         # In here we will manage the context for the agent that we are going to call.
         # We support two modes:
         #   - One-shot: only one user message to the Agent with prompt
@@ -76,4 +149,29 @@ class BaseAgentTool(BaseTool, ABC):
         #   message. For assistant message you need to make a deepcopy and refactor the state for copied message, instead
         #   of the whole state you need to get from the state value by `self.name`
         # 4. Lastly, add the user message with `prompt` and don't forget about the custom_content
-        raise NotImplementedError()
+        prompt = arguments["prompt"]
+        propagate_history = bool(arguments.get("propagate_history", False))
+
+        history = []
+        if propagate_history:
+            for idx in range(len(messages)):
+                msg = messages[idx]
+                if msg.role == Role.ASSISTANT:
+                    if msg.custom_content and msg.custom_content.state:
+                        msg_state = msg.custom_content.state
+                        if msg_state.get(self.name):
+                            copied_msg = deepcopy(msg)
+                            copied_msg.custom_content.state = msg_state.get(self.name)  # TODO: Check what is the trick here
+                            history.append(messages[idx - 1].dict(exclude_none=True))
+                            history.append(copied_msg.dict(exclude_none=True))
+
+        print(f"History for agent {self.name}:", history)
+
+        custom_content = messages[-1].custom_content
+        messages.append(
+            {
+                "role": "user",
+                "content": prompt,
+                "custom_content": custom_content.dict(exclude_none=True) if custom_content else None,
+            }
+        )
